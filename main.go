@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 
 	"github.com/urfave/cli"
 )
@@ -108,6 +109,7 @@ func getKubeConfig(c *cli.Context) error {
 		return err
 	}
 	log.Printf("SUCCESS: retrieved kubeconfig for cluster [%s]", c.String("name"))
+	fmt.Printf("%s", path.Join(destPath, "kubeconfig.yaml"))
 	return nil
 }
 
@@ -116,7 +118,7 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "k3d"
 	app.Usage = "Run k3s in Docker!"
-	app.Version = "0.0.1"
+	app.Version = "0.0.2"
 	app.Authors = []cli.Author{
 		cli.Author{
 			Name:  "iwilltry42",
@@ -221,10 +223,7 @@ func main() {
 					Usage: "name of the cluster",
 				},
 			},
-			Action: func(c *cli.Context) error {
-				fmt.Println("Starting stopped cluster")
-				return nil
-			},
+			Action: getKubeConfig,
 		},
 	}
 
