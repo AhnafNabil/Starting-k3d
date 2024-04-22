@@ -27,9 +27,7 @@ func createCluster(c *cli.Context) error {
 		extraArgs = append(extraArgs, "--volume", c.String("volume"))
 	}
 	if len(extraArgs) > 0 {
-		for _, extra := range extraArgs {
-			args = append(args, extra)
-		}
+		args = append(args, extraArgs...)
 	}
 	args = append(args,
 		"-d",
@@ -92,7 +90,7 @@ func startCluster(c *cli.Context) error {
 }
 
 func listClusters(c *cli.Context) error {
-	printClusters()
+	printClusters(c.Bool("all"))
 	return nil
 }
 
@@ -205,8 +203,14 @@ func main() {
 			Action: startCluster,
 		},
 		{
-			Name:   "list",
-			Usage:  "List all clusters",
+			Name:  "list",
+			Usage: "List all clusters",
+			Flags: []cli.Flag{
+				cli.BoolFlag{
+					Name:  "all, a",
+					Usage: "also show non-running clusters",
+				},
+			},
 			Action: listClusters,
 		},
 		{
