@@ -4,8 +4,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/iwilltry42/k3d-go/cli"
-	"github.com/iwilltry42/k3d-go/version"
+	run "github.com/AhnafNabil/Starting-k3d/cli"
+	"github.com/AhnafNabil/Starting-k3d/version"
 	"github.com/urfave/cli"
 )
 

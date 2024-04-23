@@ -1,4 +1,4 @@
-module github.com/iwilltry42/k3d-go
+module github.com/AhnafNabil/Starting-k3d
 
 go 1.22.1
 
