@@ -17,8 +17,8 @@ func main() {
 	app.Version = version.GetVersion()
 	app.Authors = []cli.Author{
 		cli.Author{
-			Name:  "iwilltry42",
-			Email: "iwilltry42@gmail.com",
+			Name:  "Ahnaf Nabil",
+			Email: "ahnafnabil14@gmail.com",
 		},
 	}
 
@@ -41,7 +41,7 @@ func main() {
 				},
 				cli.StringFlag{
 					Name:  "volume, v",
-					Usage: "Mount a volume into the cluster node (Docker notation: `source:destination`)",
+					Usage: "Mount one or more volumes into the cluster node (Docker notation: `source:destination[,source:destination]`)",
 				},
 				cli.StringFlag{
 					Name:  "version",
@@ -62,12 +62,25 @@ func main() {
 					Name:  "wait, w",
 					Usage: "Wait for the cluster to come up",
 				},
+				cli.StringSliceFlag{
+					Name:  "server-arg, x",
+					Usage: "Pass an additional argument to k3s server (new flag per argument)",
+				},
+				cli.StringSliceFlag{
+					Name:  "env, e",
+					Usage: "Pass an additional environment variable (new flag per variable)",
+				},
+				cli.IntFlag{
+					Name:  "workers",
+					Value: 0,
+					Usage: "Specify how many worker nodes you want to spawn",
+				},
 			},
 			Action: run.CreateCluster,
 		},
 		{
 			Name:    "delete",
-			Aliases: []string{"d"},
+			Aliases: []string{"d", "del"},
 			Usage:   "Delete cluster",
 			Flags: []cli.Flag{
 				cli.StringFlag{
@@ -141,6 +154,13 @@ func main() {
 				},
 			},
 			Action: run.GetKubeConfig,
+		},
+	}
+
+	app.Flags = []cli.Flag{
+		cli.BoolFlag{
+			Name:  "verbose",
+			Usage: "Enable verbose output",
 		},
 	}
 

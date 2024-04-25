@@ -1,65 +1,70 @@
 package run
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path"
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 	"github.com/urfave/cli"
 )
 
 // CheckTools checks if the installed tools work correctly
 func CheckTools(c *cli.Context) error {
 	log.Print("Checking docker...")
-	cmd := "docker"
-	args := []string{"version"}
-	if err := runCommand(true, cmd, args...); err != nil {
-		log.Fatalf("Checking docker: FAILED")
+	ctx := context.Background()
+	docker, err := client.NewEnvClient()
+	if err != nil {
 		return err
 	}
-	log.Println("Checking docker: SUCCESS")
+	ping, err := docker.Ping(ctx)
+
+	if err != nil {
+		return fmt.Errorf("ERROR: checking docker failed\n%+v", err)
+	}
+	log.Printf("SUCCESS: Checking docker succeeded (API: v%s)\n", ping.APIVersion)
 	return nil
 }
 
 // CreateCluster creates a new single-node cluster container and initializes the cluster directory
 func CreateCluster(c *cli.Context) error {
 	if c.IsSet("timeout") && !c.IsSet("wait") {
-		return errors.New("--wait flag is not specified")
+		return errors.New("Cannot use --timeout flag without --wait flag")
 	}
-	port := fmt.Sprintf("%s:%s", c.String("port"), c.String("port"))
-	image := fmt.Sprintf("rancher/k3s:%s", c.String("version"))
-	cmd := "docker"
-	args := []string{
-		"run",
-		"--name", c.String("name"),
-		"-e", "K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml",
-		"--publish", port,
-		"--privileged",
-	}
-	extraArgs := []string{}
-	if c.IsSet("volume") {
-		extraArgs = append(extraArgs, "--volume", c.String("volume"))
-	}
-	if len(extraArgs) > 0 {
-		args = append(args, extraArgs...)
-	}
-	args = append(args,
-		"-d",
-		image,
-		"server",                                // cmd
-		"--https-listen-port", c.String("port"), //args
-	)
-	log.Printf("Creating cluster [%s]", c.String("name"))
-	if err := runCommand(true, cmd, args...); err != nil {
-		log.Fatalf("FAILURE: couldn't create cluster [%s] -> %+v", c.String("name"), err)
-		return err
+	// k3s server arguments
+	k3sServerArgs := []string{"--https-listen-port", c.String("port")}
+	if c.IsSet("server-arg") || c.IsSet("x") {
+		k3sServerArgs = append(k3sServerArgs, c.StringSlice("server-arg")...)
 	}
 
+	// let's go
+	log.Printf("Creating cluster [%s]", c.String("name"))
+	dockerID, err := createServer(
+		c.Bool("verbose"),
+		fmt.Sprintf("docker.io/rancher/k3s:%s", c.String("version")),
+		c.String("port"),
+		k3sServerArgs,
+		[]string{"K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml"},
+		c.String("name"),
+		strings.Split(c.String("volume"), ","),
+	)
+	if err != nil {
+		log.Fatalf("ERROR: failed to create cluster\n%+v", err)
+	}
+
+	ctx := context.Background()
+	docker, err := client.NewEnvClient()
+	if err != nil {
+		return err
+	}
+	// wait for k3s to be up and running if we want it
 	start := time.Now()
 	timeout := time.Duration(c.Int("timeout")) * time.Second
 	for c.IsSet("wait") {
@@ -68,19 +73,18 @@ func CreateCluster(c *cli.Context) error {
 			if err != nil {
 				return err
 			}
-			return errors.New("Cluster timeout expired")
+			return errors.New("Cluster creation exceeded specified timeout")
 		}
-		cmd := "docker"
-		args = []string{
-			"logs",
-			c.String("name"),
-		}
-		prog := exec.Command(cmd, args...)
-		output, err := prog.CombinedOutput()
+		out, err := docker.ContainerLogs(ctx, dockerID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
 		if err != nil {
-			return err
+			out.Close()
+			return fmt.Errorf("ERROR: couldn't get docker logs for %s\n%+v", c.String("name"), err)
 		}
-		if strings.Contains(string(output), "Running kubelet") {
+		buf := new(bytes.Buffer)
+		nRead, _ := buf.ReadFrom(out)
+		out.Close()
+		output := buf.String()
+		if nRead > 0 && strings.Contains(string(output), "Running kubelet") {
 			break
 		}
 
@@ -98,38 +102,42 @@ kubectl cluster-info`, os.Args[0], c.String("name"))
 
 // DeleteCluster removes the cluster container and its cluster directory
 func DeleteCluster(c *cli.Context) error {
-	cmd := "docker"
-	args := []string{"rm"}
-	clusters := []string{}
+	ctx := context.Background()
+	docker, err := client.NewEnvClient()
+	if err != nil {
+		return err
+	}
+
+	clusterNames := []string{}
 
 	// operate on one or all clusters
 	if !c.Bool("all") {
-		clusters = append(clusters, c.String("name"))
+		clusterNames = append(clusterNames, c.String("name"))
 	} else {
 		clusterList, err := getClusterNames()
 		if err != nil {
-			log.Fatalf("ERROR: `--all` specified, but no clusters were found.")
+			return fmt.Errorf("ERROR: `--all` specified, but no clusters were found\n%+v", err)
 		}
-		clusters = append(clusters, clusterList...)
+		clusterNames = append(clusterNames, clusterList...)
 	}
 
 	// remove clusters one by one instead of appending all names to the docker command
 	// this allows for more granular error handling and logging
-	for _, cluster := range clusters {
-		log.Printf("Removing cluster [%s]", cluster)
-		args = append(args, cluster)
-		if err := runCommand(true, cmd, args...); err != nil {
-			log.Printf("WARNING: couldn't delete cluster [%s], trying a force remove now.", cluster)
-			args = args[:len(args)-1] // pop last element from list (name of cluster)
-			args = append(args, "-f", cluster)
-			if err := runCommand(true, cmd, args...); err != nil {
-				log.Printf("FAILURE: couldn't delete cluster [%s] -> %+v", cluster, err)
-			}
-			args = args[:len(args)-1] // pop last element from list (-f flag)
+	for _, name := range clusterNames {
+		log.Printf("Removing cluster [%s]", name)
+		cluster, err := getCluster(name)
+		if err != nil {
+			log.Printf("WARNING: couldn't get docker info for %s", name)
+			continue
 		}
-		deleteClusterDir(cluster)
-		log.Printf("SUCCESS: removed cluster [%s]", cluster)
-		args = args[:len(args)-1] // pop last element from list (name of last cluster)
+		if err := docker.ContainerRemove(ctx, cluster.id, container.RemoveOptions{}); err != nil {
+			log.Printf("WARNING: couldn't delete cluster [%s], trying a force remove now.", cluster.name)
+			if err := docker.ContainerRemove(ctx, cluster.id, container.RemoveOptions{Force: true}); err != nil {
+				log.Printf("FAILURE: couldn't delete cluster container for [%s] -> %+v", cluster.name, err)
+			}
+		}
+		deleteClusterDir(cluster.name)
+		log.Printf("SUCCESS: removed cluster [%s]", cluster.name)
 	}
 
 	return nil
@@ -137,62 +145,77 @@ func DeleteCluster(c *cli.Context) error {
 
 // StopCluster stops a running cluster container (restartable)
 func StopCluster(c *cli.Context) error {
-	cmd := "docker"
-	args := []string{"stop"}
-	clusters := []string{}
+	ctx := context.Background()
+	docker, err := client.NewEnvClient()
+	if err != nil {
+		return err
+	}
 
+	clusterNames := []string{}
 	// operate on one or all clusters
 	if !c.Bool("all") {
-		clusters = append(clusters, c.String("name"))
+		clusterNames = append(clusterNames, c.String("name"))
 	} else {
 		clusterList, err := getClusterNames()
 		if err != nil {
-			log.Fatalf("ERROR: `--all` specified, but no clusters were found.")
+			return fmt.Errorf("ERROR: `--all` specified, but no clusters were found\n%+v", err)
 		}
-		clusters = append(clusters, clusterList...)
+		clusterNames = append(clusterNames, clusterList...)
 	}
 
 	// stop clusters one by one instead of appending all names to the docker command
 	// this allows for more granular error handling and logging
-	for _, cluster := range clusters {
-		log.Printf("Starting cluster [%s]", cluster)
-		args = append(args, cluster)
-		if err := runCommand(true, cmd, args...); err != nil {
-			log.Printf("FAILURE: couldn't stop cluster [%s] -> %+v", cluster, err)
+	for _, name := range clusterNames {
+		log.Printf("Stopping cluster [%s]", name)
+		cluster, err := getCluster(name)
+		if err != nil {
+			log.Printf("WARNING: couldn't get docker info for %s", name)
+			continue
 		}
-		log.Printf("SUCCESS: stopped cluster [%s]", cluster)
-		args = args[:len(args)-1] // pop last element from list (name of last cluster)
+		if err := docker.ContainerStop(ctx, cluster.id, container.StopOptions{}); err != nil {
+			fmt.Printf("WARNING: couldn't stop cluster %s\n%+v", cluster.name, err)
+			continue
+		}
+		log.Printf("SUCCESS: stopped cluster [%s]", cluster.name)
 	}
 	return nil
 }
 
 // StartCluster starts a stopped cluster container
 func StartCluster(c *cli.Context) error {
-	cmd := "docker"
-	args := []string{"start"}
-	clusters := []string{}
+	ctx := context.Background()
+	docker, err := client.NewEnvClient()
+	if err != nil {
+		return err
+	}
+
+	clusterNames := []string{}
 
 	// operate on one or all clusters
 	if !c.Bool("all") {
-		clusters = append(clusters, c.String("name"))
+		clusterNames = append(clusterNames, c.String("name"))
 	} else {
 		clusterList, err := getClusterNames()
 		if err != nil {
-			log.Fatalf("ERROR: `--all` specified, but no clusters were found.")
+			return fmt.Errorf("ERROR: `--all` specified, but no clusters were found\n%+v", err)
 		}
-		clusters = append(clusters, clusterList...)
+		clusterNames = append(clusterNames, clusterList...)
 	}
 
-	// start clusters one by one instead of appending all names to the docker command
+	// stop clusters one by one instead of appending all names to the docker command
 	// this allows for more granular error handling and logging
-	for _, cluster := range clusters {
-		log.Printf("Starting cluster [%s]", cluster)
-		args = append(args, cluster)
-		if err := runCommand(true, cmd, args...); err != nil {
-			log.Printf("FAILURE: couldn't start cluster [%s] -> %+v", cluster, err)
+	for _, name := range clusterNames {
+		log.Printf("Starting cluster [%s]", name)
+		cluster, err := getCluster(name)
+		if err != nil {
+			log.Printf("WARNING: couldn't get docker info for %s", name)
+			continue
 		}
-		log.Printf("SUCCESS: started cluster [%s]", cluster)
-		args = args[:len(args)-1] // pop last element from list (name of last cluster)
+		if err := docker.ContainerStart(ctx, cluster.id, container.StartOptions{}); err != nil {
+			fmt.Printf("WARNING: couldn't start cluster %s\n%+v", cluster.name, err)
+			continue
+		}
+		log.Printf("SUCCESS: started cluster [%s]", cluster.name)
 	}
 	return nil
 }
@@ -209,9 +232,8 @@ func GetKubeConfig(c *cli.Context) error {
 	destPath, _ := getClusterDir(c.String("name"))
 	cmd := "docker"
 	args := []string{"cp", sourcePath, destPath}
-	if err := runCommand(false, cmd, args...); err != nil {
-		log.Fatalf("FAILURE: couldn't get kubeconfig for cluster [%s] -> %+v", c.String("name"), err)
-		return err
+	if err := runCommand(c.GlobalBool("verbose"), cmd, args...); err != nil {
+		return fmt.Errorf("ERROR: Couldn't get kubeconfig for cluster [%s]\n%+v", fmt.Sprintf("%s-server", c.String("name")), err)
 	}
 	fmt.Printf("%s\n", path.Join(destPath, "kubeconfig.yaml"))
 	return nil
