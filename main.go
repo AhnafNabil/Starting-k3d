@@ -44,8 +44,9 @@ func main() {
 					Usage: "Mount one or more volumes into the cluster node (Docker notation: `source:destination[,source:destination]`)",
 				},
 				cli.StringFlag{
-					Name:  "version",
-					Value: "v1.29.4-rc1-k3s1",
+					Name: "version",
+					// Value: "v1.29.4-rc1-k3s1",
+					Value: version.GetK3sVersion(),
 					Usage: "Choose the k3s image version",
 				},
 				cli.IntFlag{
