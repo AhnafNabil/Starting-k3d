@@ -54,10 +54,20 @@ func CreateCluster(c *cli.Context) error {
 	if c.IsSet("env") || c.IsSet("e") {
 		env = append(env, c.StringSlice("env")...)
 	}
+
+	// clusterSecret and token is a must. otherwise we can't join the cluster
 	k3sClusterSecret := ""
+
+	k3sToken := ""
+
+	//if worker node is set append the cluster secret and token to the environment variables
+
 	if c.Int("workers") > 0 {
 		k3sClusterSecret = fmt.Sprintf("K3S_CLUSTER_SECRET=%s", GenerateRandomString(20))
 		env = append(env, k3sClusterSecret)
+
+		k3sToken = fmt.Sprintf("K3S_TOKEN=%s", GenerateRandomString(20))
+		env = append(env, k3sToken)
 	}
 	// k3s server arguments
 	k3sServerArgs := []string{"--https-listen-port", c.String("port")}
@@ -122,7 +132,10 @@ kubectl cluster-info`, os.Args[0], c.String("name"))
 	// worker nodes
 	if c.Int("workers") > 0 {
 		k3sWorkerArgs := []string{}
-		env := []string{k3sClusterSecret}
+
+		// appending the k3sClusterSecret and k3sToke to env variable
+		env := []string{k3sClusterSecret, k3sToken}
+
 		log.Printf("Booting %s workers for cluster %s", strconv.Itoa(c.Int("workers")), c.String("name"))
 		for i := 0; i < c.Int("workers"); i++ {
 			workerID, err := createWorker(
