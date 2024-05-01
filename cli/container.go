@@ -12,7 +12,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/docker/go-connections/nat"
@@ -23,12 +22,6 @@ import (
 	"github.com/docker/docker/client"
 )
 
-// To do: update this function and solve why the package function is not working
-func IsImageNotFoundError(err error) bool {
-	// Check if the error message contains a string indicating that the image is not found
-	return strings.Contains(err.Error(), "No such image") || strings.Contains(err.Error(), "not found")
-}
-
 func startContainer(verbose bool, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, containerName string) (string, error) {
 	ctx := context.Background()
 	docker, err := client.NewEnvClient()
@@ -36,31 +29,27 @@ func startContainer(verbose bool, config *container.Config, hostConfig *containe
 		return "", fmt.Errorf("ERROR: couldn't create docker client\n%+v", err)
 	}
 
+	log.Printf("Pulling image %s...\n", config.Image)
+	reader, err := docker.ImagePull(ctx, config.Image, image.PullOptions{})
+	if err != nil {
+		return "", fmt.Errorf("ERROR: couldn't pull image %s\n%+v", config.Image, err)
+	}
+	defer reader.Close()
+	if verbose {
+		_, err := io.Copy(os.Stdout, reader)
+		if err != nil {
+			log.Printf("WARNING: couldn't get docker output\n%+v", err)
+		}
+	} else {
+		_, err := io.Copy(ioutil.Discard, reader)
+		if err != nil {
+			log.Printf("WARNING: couldn't get docker output\n%+v", err)
+		}
+	}
+
 	resp, err := docker.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
-	if IsImageNotFoundError(err) {
-		log.Printf("Pulling image %s...\n", config.Image)
-		reader, err := docker.ImagePull(ctx, config.Image, image.PullOptions{})
-		if err != nil {
-			return "", fmt.Errorf("ERROR: couldn't pull image %s\n%+v", config.Image, err)
-		}
-		defer reader.Close()
-		if verbose {
-			_, err := io.Copy(os.Stdout, reader)
-			if err != nil {
-				log.Printf("WARNING: couldn't get docker output\n%+v", err)
-			}
-		} else {
-			_, err := io.Copy(ioutil.Discard, reader)
-			if err != nil {
-				log.Printf("WARNING: couldn't get docker output\n%+v", err)
-			}
-		}
-		resp, err = docker.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
-		if err != nil {
-			return "", fmt.Errorf("ERROR: couldn't create container after pull %s\n%+v", containerName, err)
-		}
-	} else if err != nil {
-		return "", fmt.Errorf("ERROR: couldn't create container %s\n%+v", containerName, err)
+	if err != nil {
+		return "", fmt.Errorf("ERROR: couldn't create container after pull %s\n%+v", containerName, err)
 	}
 
 	if err := docker.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
